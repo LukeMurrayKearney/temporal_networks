@@ -13,13 +13,23 @@
 # ---------------------------------------------------------------------------
 # SEIR sweep: {NB, log-GMM mean-match} x {ICC 0, 0.365, 0.95} x {n} x beta
 #
-# SUBMIT WITH (from the seir_sweep directory):
+# SUBMIT WITH, from seir_sweep/:
 #     mkdir -p slurm_logs && sbatch run_sweep.slurm
+# or from temporal_networks/:
+#     mkdir -p slurm_logs && sbatch seir_sweep/run_sweep.slurm
 #
-# The mkdir is required the first time: slurm opens the --output/--error files
-# before the script body runs, so on a cluster that does not auto-create the
-# directory the job dies immediately with "No such file or directory". The
-# mkdir further down only covers the case where it is removed between runs.
+# WHERE THE LOGS GO: slurm resolves the --output/--error paths above relative to
+# THE DIRECTORY YOU RAN sbatch FROM -- not to where this script lives. So the
+# logs land in <dir you submitted from>/slurm_logs/seir_sweep_<jobid>.{out,err}:
+#     submitted from seir_sweep/         -> seir_sweep/slurm_logs/
+#     submitted from temporal_networks/  -> temporal_networks/slurm_logs/
+#
+# The mkdir is required the FIRST time, in whichever directory you submit from:
+# slurm opens those files before the script body runs, so if the directory is
+# missing the job dies immediately with "No such file or directory" and the
+# mkdir further down never executes. (It only covers later runs.)
+#
+# Either submit directory works: the script locates run_sweep.py itself below.
 #
 # run_sweep.py parallelises with a multiprocessing pool INSIDE a single task,
 # so this is one task with 48 CPUs (not 48 MPI tasks). Do not wrap the python
@@ -50,8 +60,27 @@ export MKL_NUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
 export PYTHONUNBUFFERED=1
 
-cd "$SLURM_SUBMIT_DIR" || exit 1
-mkdir -p slurm_logs
+# Keep the log directory alive for subsequent runs (too late for THIS job's own
+# log files -- slurm opened those before the script started; see header).
+mkdir -p "${SLURM_SUBMIT_DIR}/slurm_logs"
+
+# ---------------------------------------------------------------------------
+# Locate run_sweep.py, so submitting from either seir_sweep/ or
+# temporal_networks/ works.
+#
+# $0 / ${BASH_SOURCE[0]} are NOT usable here: slurm copies the batch script to a
+# node-local spool path (e.g. /var/spool/slurmd/job12345/slurm_script), so they
+# do not point at the real location in the repo. $SLURM_SUBMIT_DIR is the
+# directory sbatch was invoked from, which is the reliable anchor.
+# ---------------------------------------------------------------------------
+if   [ -f "${SLURM_SUBMIT_DIR}/run_sweep.py" ];             then SWEEP_DIR="${SLURM_SUBMIT_DIR}"
+elif [ -f "${SLURM_SUBMIT_DIR}/seir_sweep/run_sweep.py" ];  then SWEEP_DIR="${SLURM_SUBMIT_DIR}/seir_sweep"
+else
+    echo "ERROR: cannot find run_sweep.py from SLURM_SUBMIT_DIR=${SLURM_SUBMIT_DIR}" >&2
+    echo "       submit from seir_sweep/ or from temporal_networks/." >&2
+    exit 1
+fi
+cd "$SWEEP_DIR" || exit 1
 
 # ---------------------------------------------------------------------------
 # Which slice of the grid to run.
