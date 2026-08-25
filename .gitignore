@@ -3,12 +3,12 @@
 # Goal: the repo carries exactly what is needed to run
 # ``seir_sweep/run_sweep.py`` on another machine, and nothing else.
 #
-# The tracked set is 14 files / ~528 KB (13 below, plus this .gitignore):
+# The tracked set is 15 files / ~536 KB (14 below, plus this .gitignore):
 #
 #   gillespie_seir.py  gmm_contacts.py  network.py  outbreak_metrics.py
 #   seir_comparison_common.py  temporal.py
 #   seir_sweep/{run_sweep,config,builders,metrics,calibrate_beta}.py
-#   seir_sweep/README.md
+#   seir_sweep/README.md  seir_sweep/run_sweep.slurm
 #   seir_sweep/outputs/fits_cache.pkl
 #
 # Verified by cloning exactly that set into an isolated directory with the
@@ -46,6 +46,7 @@
 !seir_sweep/metrics.py
 !seir_sweep/calibrate_beta.py
 !seir_sweep/README.md
+!seir_sweep/run_sweep.slurm
 
 # --- fitted parameters: makes the repo self-contained (see note above) ------
 !seir_sweep/outputs/fits_cache.pkl
@@ -67,6 +68,9 @@ seir_sweep/outputs/runs_summary.csv
 seir_sweep/outputs/network_summary.csv
 seir_sweep/outputs/manifest.json
 seir_sweep/outputs/beta_r0_calibration.csv
+
+# slurm job logs (written next to the script by run_sweep.slurm)
+seir_sweep/slurm_logs/
 
 # earlier pipelines' outputs, figures and logs.
 # NOTE the leading slash: it anchors these to the repo root. Without it,
