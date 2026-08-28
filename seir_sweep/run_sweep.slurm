@@ -128,11 +128,15 @@ echo "end $(date)"
 # Completed realisations leave a marker in outputs/_done/, and re-submitting
 # this exact script skips them, so a timed-out job resumes where it stopped.
 #
-# CAVEAT -- do not split a size across jobs by --betas. The done-marker is keyed
-# on (model, ICC, n, net_rep) and carries no beta information, so a second job
-# running the remaining betas would see the marker, skip the realisation, and
-# silently leave those betas unrun (it would also overwrite that cell's shard).
-# Split only along --models / --iccs / --sizes, which are part of the key.
+# Progress is tracked per (realisation, beta), so splitting along --betas is
+# safe as well as along --models / --iccs / --sizes, and BETAS CAN BE ADDED TO A
+# FINISHED GRID: re-submit with the new values and only those are simulated, on
+# the same network realisations as the originals. Overlapping beta sets cost
+# nothing -- finished ones are skipped.
+#
+# (Before the per-beta markers this was a trap: the marker carried no beta
+# information, so a second job with different betas skipped every realisation
+# and silently ran nothing.)
 #
 # ---------------------------------------------------------------------------
 # n = 1,000,000
@@ -141,8 +145,9 @@ echo "end $(date)"
 # rebuilds the whole daily adjacency in Python every simulated day; that costs
 # ~4 s/day at 100k, so ~40 s/day at 1M, and a supercritical outbreak runs for
 # ~200 days => roughly 2-6 h for a SINGLE run. Each 1M realisation is 9 betas
-# x 2 sim_reps = 18 such runs, i.e. well over 48 h, and because the done-marker
-# is written only after all 18 finish, a timeout loses the whole realisation.
+# x 2 sim_reps = 18 such runs, i.e. well over 48 h. A timeout now loses only the
+# beta in flight -- each beta is committed as it finishes -- so a 1M job can be
+# resumed by re-submitting, and can also be split by --betas across jobs.
 #
 # Options, in increasing order of effort:
 #   1. Submit the 1M slice as 6 independent jobs, one per (model, ICC), each
@@ -157,6 +162,6 @@ echo "end $(date)"
 #      high-R0 betas (also the slowest), e.g.
 #          SWEEP_EXTRA="--betas 0.05 0.10 0.17 0.37 0.59 1.97 --no-transmission-log"
 #      The transmission logs are by far the largest output at this size.
-#   3. Make the done-marker beta-aware so 1M can be split by beta across an
-#      array job -- a small change to run_sweep.run_task(), needed before
-#      option 1 can be parallelised any further.
+#   3. Split each (model, ICC) further by --betas across an array job -- now
+#      safe, since the done-marker is per (realisation, beta), e.g.
+#          SWEEP_EXTRA="--models nb --iccs 0.365 --betas 0.05 0.10 0.17"

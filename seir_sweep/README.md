@@ -26,6 +26,11 @@ France 2015 2-day panel value of **0.365**):
 | `0.365` | `partial_resample` with calibrated `rho` | the **real** empirical value |
 | `0.95` | `partial_resample`, `rho -> 1` | near-permanent-trait regime |
 
+See **`icc_construction_explainer.ipynb`** for the construction-level
+walkthrough of this axis: how each arm is built, why the default recipe pins the
+ICC at `B/(B+m)`, how `rho` is derived, and why the two obvious alternatives to
+`partial_resample` are rejected. It runs standalone from the cached fits (~1 min).
+
 `partial_resample` is used because it is the only noise procedure that hits a
 target ICC while leaving the daily degree distribution (mean, variance, skew)
 unchanged. `rho` is calibrated per realisation from the *realised* rate
@@ -43,8 +48,23 @@ python run_sweep.py --sizes 10000 -j 8      # run the 10k slice
 python run_sweep.py --collect               # merge shards into final CSVs
 ```
 
-Re-running skips completed realisations (done-markers in `outputs/_done/`), so
-an interrupted sweep resumes. `--force` ignores them.
+Re-running skips completed **(realisation, beta)** units (done-markers in
+`outputs/_done/`), so an interrupted sweep resumes at the beta it was on.
+
+Because progress is tracked per beta, **betas can be added to a finished grid**
+without re-running or overwriting the finished ones — they land on the same
+network realisations, so the design stays paired:
+
+```bash
+# interleave the threshold region of an already-complete grid
+python run_sweep.py --sizes 10000 100000 \
+    --betas 0.0707 0.1304 0.2508 0.4672 1.0781
+python run_sweep.py --collect
+```
+
+Re-running with betas that are already done is a no-op, so overlapping sets are
+safe. `--force` re-runs the requested cells and betas — scoped to what you
+asked for, never the whole grid.
 
 ## Feasibility
 
@@ -110,3 +130,5 @@ reproduced in isolation.
 - `metrics.py` — all derived metrics
 - `run_sweep.py` — parallel driver / CLI
 - `calibrate_beta.py` — empirical R0(beta) scan
+- `icc_construction_explainer.ipynb` — how the ICC axis is constructed (explainer)
+- `sweep_analysis.ipynb` — analysis of the sweep outputs

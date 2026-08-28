@@ -7,9 +7,15 @@ realisation (a paired design that also amortises the expensive network build).
 Tasks are distributed over a process pool.
 
 Outputs land in ``outputs/`` -- see ``--help`` and the module docstring of
-``metrics.py`` for what is recorded. Writing is shard-per-task so parallel
-workers never contend, and completed tasks are skipped on re-run, so an
-interrupted sweep resumes where it stopped.
+``metrics.py`` for what is recorded. Writing is shard-per-(task, beta) so
+parallel workers never contend, and completed ``(realisation, beta)`` units are
+skipped on re-run, so an interrupted sweep resumes where it stopped.
+
+Because progress is tracked per beta, **betas can be added to a finished grid**:
+re-run with the new values and only those are simulated, on the same network
+realisations as the originals (the seeds derive from the grid coordinates, not
+from the beta list). Overlapping beta sets are free -- already-finished ones are
+skipped.
 
 Examples
 --------
@@ -17,6 +23,8 @@ Examples
     python run_sweep.py --sizes 10000               # the 10k slice of the grid
     python run_sweep.py --sizes 10000 100000 -j 8   # bigger slice, 8 workers
     python run_sweep.py --collect                   # merge shards into final CSVs
+    python run_sweep.py --sizes 10000 \
+        --betas 0.071 0.130 0.251 0.467          # add betas to a finished grid
 """
 
 from __future__ import annotations
@@ -71,6 +79,80 @@ def _seed(*coords) -> int:
     return int(ss.generate_state(1, dtype=np.uint32)[0])
 
 
+def _btag(beta: float) -> str:
+    """Filename-safe key for a beta value (same convention as the run stems)."""
+    return f"{int(round(beta * 1e6)):08d}"
+
+
+def _completed_betas(cell: str) -> list[float] | None:
+    """Betas a legacy whole-realisation marker actually covered.
+
+    Read from that cell's own shard, which records a ``beta`` per row -- ground
+    truth, and immune to ``config.BETAS`` having been edited since the run.
+    """
+    shard = SHARD_DIR / f"runs_{cell}.csv"
+    if not shard.exists():
+        return None
+    try:
+        betas = pd.read_csv(shard, usecols=["beta"])["beta"].unique()
+    except (ValueError, OSError, pd.errors.ParserError):
+        return None
+    return sorted(float(b) for b in betas) or None
+
+
+def _migrate_done_markers() -> int:
+    """Upgrade legacy whole-realisation markers to per-beta markers.
+
+    Before the sweep tracked betas individually a completed realisation left a
+    single ``{cell}.done``. That carried no beta information, so adding betas to
+    an existing grid was impossible: re-running skipped every cell, and
+    ``--force`` re-ran everything and overwrote the shard. Each legacy marker is
+    expanded here into one marker per beta that the run actually produced, after
+    which new betas can be added to a finished grid without touching the
+    finished ones.
+
+    The beta list comes from the cell's own shard, never from ``config.BETAS``:
+    reading it from config would mean that editing ``BETAS`` before the first
+    migrating run marked the *new* betas as already done and skipped them
+    forever. A cell whose betas cannot be determined is left alone and reported,
+    so it fails loudly rather than silently losing work.
+    """
+    legacy = [m for m in DONE_DIR.glob("*.done") if "__beta" not in m.name]
+    if not legacy:
+        return 0
+    n_ok, unresolved = 0, []
+    for m in legacy:
+        cell = m.stem
+        betas = _completed_betas(cell)
+        if betas is None:
+            unresolved.append(cell)
+            continue
+        try:
+            info = json.loads(m.read_text())
+        except (json.JSONDecodeError, OSError):
+            info = {}
+        for b in betas:
+            marker = DONE_DIR / f"{cell}__beta{_btag(b)}.done"
+            if not marker.exists():
+                marker.write_text(json.dumps({
+                    "cell": cell, "beta": b, "migrated_from": m.name,
+                    "n_runs": info.get("n_runs"), "seconds": info.get("seconds"),
+                }))
+        m.unlink()
+        n_ok += 1
+    if n_ok:
+        print(f"  migrated {n_ok} legacy done-markers -> per-beta markers "
+              f"(betas read from each cell's shard)")
+    if unresolved:
+        print(f"  WARNING: {len(unresolved)} legacy markers left as-is -- no "
+              f"readable shard to tell which betas they covered:")
+        for cell in unresolved[:5]:
+            print(f"    {cell}")
+        print("  These cells will be re-run in full. Delete their markers to "
+              "force that, or restore the shards.")
+    return n_ok
+
+
 # ---------------------------------------------------------------------------
 # One task = one network realisation, all betas and sim reps on it
 # ---------------------------------------------------------------------------
@@ -79,9 +161,15 @@ def run_task(model: str, icc: float, n_nodes: int, net_rep: int,
              betas: list[float], sim_reps: int, max_days: int | None,
              save_transmission_log: bool, save_daily_series: bool) -> dict:
     cell = C.cell_id(model, icc, n_nodes, net_rep)
-    done_marker = DONE_DIR / f"{cell}.done"
-    if done_marker.exists():
-        return {"cell": cell, "status": "skipped", "seconds": 0.0}
+    # Betas are tracked one at a time, so a cell that already holds some betas
+    # only runs the ones it is missing. The network is rebuilt from the same
+    # ``net_seed``, so added betas land on exactly the same realisation as the
+    # betas that were run before -- the design stays paired.
+    todo = [b for b in betas
+            if not (DONE_DIR / f"{cell}__beta{_btag(b)}.done").exists()]
+    if not todo:
+        return {"cell": cell, "status": "skipped", "seconds": 0.0,
+                "n_runs": 0, "n_betas": 0}
 
     t_start = time.perf_counter()
     net_seed = _seed(1, _model_code(model), int(icc * 1000), n_nodes, net_rep)
@@ -95,11 +183,14 @@ def run_task(model: str, icc: float, n_nodes: int, net_rep: int,
     struct.update({"cell": cell, "net_rep": net_rep,
                    "network_build_seconds": build_s})
     del probe
-    pd.DataFrame([struct]).to_csv(SHARD_DIR / f"network_{cell}.csv", index=False)
+    net_shard = SHARD_DIR / f"network_{cell}.csv"
+    if not net_shard.exists():      # same seed -> same network; write once
+        pd.DataFrame([struct]).to_csv(net_shard, index=False)
 
     edges_fn = real.edges_fn()
-    rows = []
-    for beta in betas:
+    n_runs = 0
+    for beta in todo:
+        rows = []
         for rep in range(sim_reps):
             sim_seed = _seed(2, _model_code(model), int(icc * 1000), n_nodes,
                              net_rep, int(round(beta * 1e6)), rep)
@@ -158,13 +249,18 @@ def run_task(model: str, icc: float, n_nodes: int, net_rep: int,
                               compression="gzip")
             del tdf, traj, daily
 
-    pd.DataFrame(rows).to_csv(SHARD_DIR / f"runs_{cell}.csv", index=False)
-    done_marker.write_text(json.dumps({
-        "cell": cell, "n_runs": len(rows),
-        "seconds": time.perf_counter() - t_start,
-    }))
-    return {"cell": cell, "status": "ok", "n_runs": len(rows),
-            "seconds": time.perf_counter() - t_start}
+        # Commit this beta on its own, so an interrupted task keeps the betas it
+        # finished instead of losing the whole realisation.
+        pd.DataFrame(rows).to_csv(
+            SHARD_DIR / f"runs_{cell}__beta{_btag(beta)}.csv", index=False)
+        (DONE_DIR / f"{cell}__beta{_btag(beta)}.done").write_text(json.dumps({
+            "cell": cell, "beta": beta, "n_runs": len(rows),
+            "seconds": time.perf_counter() - t_start,
+        }))
+        n_runs += len(rows)
+
+    return {"cell": cell, "status": "ok", "n_runs": n_runs,
+            "n_betas": len(todo), "seconds": time.perf_counter() - t_start}
 
 
 def _worker(args) -> dict:
@@ -193,6 +289,14 @@ def collect() -> None:
             print(f"  no {prefix}* shards yet")
             continue
         df = pd.concat([pd.read_csv(s) for s in shards], ignore_index=True)
+        # Shards from different invocations can overlap if the same beta was
+        # requested twice; keep one row per replicate rather than double-count.
+        key = [k for k in ("cell", "beta", "sim_rep") if k in df.columns]
+        if key:
+            n_before = len(df)
+            df = df.drop_duplicates(subset=key, keep="first")
+            if len(df) < n_before:
+                print(f"  {out_name}: dropped {n_before - len(df):,} duplicate rows")
         df.to_csv(C.OUT_DIR / out_name, index=False)
         print(f"  {out_name}: {len(df):,} rows from {len(shards)} shards")
 
@@ -252,11 +356,41 @@ def main() -> None:
         estimate(tasks_grid, args.betas, args)
         return
 
-    if args.force:
-        for m in DONE_DIR.glob("*.done"):
-            m.unlink()
+    print("Checking done-markers...")
+    _migrate_done_markers()
 
-    print("Preparing fits (NB + mean-matched log-GMM)...")
+    if args.force:
+        # Scoped to the cells and betas actually requested, so --force on a
+        # slice can never discard finished work outside that slice.
+        wanted = {C.cell_id(m, i, n, r) for (m, i, n, r) in tasks_grid}
+        n_cleared = 0
+        for b in args.betas:
+            for cell in wanted:
+                marker = DONE_DIR / f"{cell}__beta{_btag(b)}.done"
+                if marker.exists():
+                    marker.unlink()
+                    n_cleared += 1
+        print(f"  --force: cleared {n_cleared} done-markers "
+              f"({len(wanted)} cells x {len(args.betas)} betas)")
+
+    # What is already on disk for the requested slice, so an accidental re-run
+    # of finished betas is visible before it costs anything.
+    n_cells = len(tasks_grid)
+    pending = {b: sum(1 for (m, i, n, r) in tasks_grid
+                      if not (DONE_DIR / f"{C.cell_id(m, i, n, r)}__beta{_btag(b)}.done").exists())
+               for b in args.betas}
+    n_todo = sum(pending.values())
+    print(f"\nRequested {len(args.betas)} betas x {n_cells} realisations "
+          f"= {n_cells * len(args.betas)} (cell, beta) units")
+    print(f"  already done : {n_cells * len(args.betas) - n_todo}")
+    print(f"  to run       : {n_todo}")
+    if n_todo:
+        fresh = [f"{b:g}" for b, k in pending.items() if k]
+        print(f"  betas with work: {', '.join(fresh)}")
+    else:
+        print("  nothing to do -- every requested beta is already complete.")
+
+    print("\nPreparing fits (NB + mean-matched log-GMM)...")
     prepare_fits()
 
     tasks = [
@@ -293,7 +427,8 @@ def main() -> None:
                 print(res.get("traceback", ""))
             else:
                 print(f"[{n_done}/{len(tasks)}] {res['status']:7s} {res['cell']} "
-                      f"({res.get('n_runs', 0)} runs, {res['seconds']:.0f}s)")
+                      f"({res.get('n_betas', 0)} betas, {res.get('n_runs', 0)} runs, "
+                      f"{res['seconds']:.0f}s)")
 
     print(f"\nAll tasks finished in {time.perf_counter() - t0:.0f}s ({n_err} errors)")
     print("Collecting shards...")
