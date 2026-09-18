@@ -48,8 +48,16 @@
 !seir_sweep/README.md
 !seir_sweep/run_sweep.slurm
 
+# --- the structure sweep: {temporal,static} x {households,none} x model ----
+!seir_sweep/run_structure_sweep.py
+!seir_sweep/config_structure.py
+!seir_sweep/builders_structure.py
+!seir_sweep/README_structure.md
+!seir_sweep/run_structure_sweep.slurm
+
 # --- fitted parameters: makes the repo self-contained (see note above) ------
 !seir_sweep/outputs/fits_cache.pkl
+!seir_sweep/outputs_structure/fits_cache.pkl
 
 # --- this file -------------------------------------------------------------
 !.gitignore
@@ -68,6 +76,13 @@ seir_sweep/outputs/runs_summary.csv
 seir_sweep/outputs/network_summary.csv
 seir_sweep/outputs/manifest.json
 seir_sweep/outputs/beta_r0_calibration.csv
+seir_sweep/outputs_structure/shards/
+seir_sweep/outputs_structure/_done/
+seir_sweep/outputs_structure/transmission_logs/
+seir_sweep/outputs_structure/daily_series/
+seir_sweep/outputs_structure/runs_summary.csv
+seir_sweep/outputs_structure/network_summary.csv
+seir_sweep/outputs_structure/manifest.json
 
 # slurm job logs (written next to the script by run_sweep.slurm)
 seir_sweep/slurm_logs/

@@ -412,8 +412,29 @@ def simulate_seir(
 
     t = 0.0
     day = 0
+    prev_edges = None
     while True:
-        ns.set_adjacency(edges_fn(day))
+        # A static network hands back the *same* edge-list object every day (see
+        # ``static_edges_fn``), and both the adjacency and the live S-I edge set
+        # are already kept exact incrementally by ``set_state``. Rebuilding them
+        # from scratch each day is then an O(E) no-op that dominates a long
+        # static run (measured ~6.5x on a 20k-node outbreak). The check is by
+        # identity, so a temporal ``edges_fn`` -- which returns a fresh list on
+        # every call -- always rebuilds, exactly as before.
+        #
+        # The skipped rebuild leaves the *set* of live S-I edges and the total
+        # transmission rate identical, but not the order of edges within a
+        # weight bucket: swap-removal shuffles them, where a rebuild re-inserts
+        # in node order. ``sample_si_edge`` draws a uniform index within a
+        # bucket, so a static run started from a given seed now walks a
+        # different sample path from the same distribution than it did before
+        # this fast path existed. Stored results are unaffected; re-running an
+        # old static script will not reproduce its old CSVs replicate-for-
+        # replicate, only its distributions.
+        today_edges = edges_fn(day)
+        if today_edges is not prev_edges:
+            ns.set_adjacency(today_edges)
+            prev_edges = today_edges
         day_end = t + day_length
         day_boundaries.append(day_end)
 
