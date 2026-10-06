@@ -38,6 +38,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import zlib
 import time
@@ -55,7 +56,9 @@ if str(HERE) not in sys.path:
 import config as C                                      # noqa: E402
 import config_structure as CS                           # noqa: E402
 import metrics as M                                     # noqa: E402
-from builders_structure import build_realisation, prepare_fits  # noqa: E402
+from builders_structure import (                        # noqa: E402
+    NOHH_CONTACT_FIT, build_realisation, prepare_fits,
+)
 
 sys.path.insert(0, str(C.REPO))
 from gillespie_seir import SEIRParams, simulate_seir     # noqa: E402
@@ -110,6 +113,66 @@ def _seed(*coords) -> int:
 def _btag(beta: float) -> str:
     """Filename-safe key for a beta value (same convention as the run stems)."""
     return f"{int(round(beta * 1e6)):08d}"
+
+
+# ---------------------------------------------------------------------------
+# Results left over from the age-blind no-household construction
+# ---------------------------------------------------------------------------
+
+_NOHH_ARMS = [a for a in CS.ARMS if not CS.arm_has_households(a)]
+_NOHH_CELL_RE = re.compile(
+    "((?:" + "|".join(re.escape(a) for a in _NOHH_ARMS) + r")__.+?__net\d+)")
+
+# What to run to clear them, printed wherever stale results are reported.
+STALE_NOHH_HELP = f"""\
+  Delete the old no-household results, then rebuild the summary tables:
+
+      cd {HERE}
+      find outputs_structure/_done outputs_structure/shards \\
+           outputs_structure/transmission_logs outputs_structure/daily_series \\
+           outputs/_analysis_cache \\
+           -maxdepth 1 -type f -name '*nohh_*' -delete
+      python run_structure_sweep.py --collect
+"""
+
+
+def stale_nohh_cells(cells=None) -> list[str]:
+    """No-household cells on disk that predate age-structured contact.
+
+    Until 2026-10-06 the ``nohh_*`` arms drew community contact from a pooled,
+    age-blind fit. A realisation built since then records ``nohh_contact_fit``
+    in its network shard, which is written before any epidemic is run on it. So
+    a no-household cell that has *any* file on disk but no such record is left
+    over from the old construction, and resuming on top of it would silently
+    mix the two: the done-markers would skip the old betas, and the write-once
+    network shard would keep the old structure.
+
+    ``cells`` restricts the check to those cell ids; ``None`` checks every
+    no-household cell found on disk.
+    """
+    on_disk: set[str] = set()
+    for d in (SHARD_DIR, DONE_DIR, TLOG_DIR, SERIES_DIR):
+        if not d.exists():
+            continue
+        with os.scandir(d) as it:
+            for entry in it:
+                m = _NOHH_CELL_RE.search(entry.name)
+                if m:
+                    on_disk.add(m.group(1))
+    if cells is not None:
+        on_disk &= set(cells)
+
+    stale = []
+    for cell in sorted(on_disk):
+        shard = SHARD_DIR / f"network_{cell}.csv"
+        fit = None
+        if shard.exists():
+            head = pd.read_csv(shard, nrows=1)
+            if "nohh_contact_fit" in head.columns and len(head):
+                fit = head["nohh_contact_fit"].iloc[0]
+        if fit != NOHH_CONTACT_FIT:
+            stale.append(cell)
+    return stale
 
 
 # ---------------------------------------------------------------------------
@@ -263,6 +326,13 @@ def collect() -> None:
         df.to_csv(CS.OUT_DIR / out_name, index=False)
         print(f"  {out_name}: {len(df):,} rows from {len(shards)} shards")
 
+    stale = stale_nohh_cells()
+    if stale:
+        print(f"\n  WARNING: {len(stale)} no-household realisations on disk were "
+              "built with the old age-blind\n  contact fit, and their rows are in "
+              "the tables just written.")
+        print(STALE_NOHH_HELP)
+
     src = CS.EXCLUDED_ARM_SOURCE
     print(f"\n  reminder: the {CS.EXCLUDED_ARM} corner is not in these tables.")
     print(f"  {'found' if src.exists() else 'MISSING'}: {src}")
@@ -337,6 +407,18 @@ def main() -> None:
     if args.estimate:
         estimate(tasks_grid, args.betas, args)
         return
+
+    # --force clears done-markers only; it does not remove a write-once network
+    # shard or a transmission log, so it cannot make old no-household results
+    # safe to build on. They have to be deleted.
+    stale = stale_nohh_cells({CS.cell_id(*t) for t in tasks_grid})
+    if stale:
+        print(f"REFUSING TO RUN: {len(stale)} of the requested no-household "
+              "realisations already have results\non disk from the old "
+              "age-blind contact fit (e.g. " + stale[0] + ").\n"
+              "Running now would mix old and new results.\n")
+        print(STALE_NOHH_HELP)
+        sys.exit(2)
 
     if args.force:
         # Scoped to the cells and betas actually requested, so --force on a

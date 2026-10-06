@@ -54,6 +54,12 @@
 !seir_sweep/builders_structure.py
 !seir_sweep/README_structure.md
 !seir_sweep/run_structure_sweep.slurm
+!seir_sweep/rerun_nohh.sh
+!seir_sweep/rerun_nohh.slurm
+!seir_sweep/fetch_results.sh
+# unified_analysis.ipynb is deliberately NOT negated: this repo tracks no
+# notebooks (see the *.ipynb rule below), and a notebook carries megabytes
+# of stored output. Rebuild it from the sweep outputs instead.
 
 # --- fitted parameters: makes the repo self-contained (see note above) ------
 !seir_sweep/outputs/fits_cache.pkl
@@ -83,6 +89,7 @@ seir_sweep/outputs_structure/daily_series/
 seir_sweep/outputs_structure/runs_summary.csv
 seir_sweep/outputs_structure/network_summary.csv
 seir_sweep/outputs_structure/manifest.json
+seir_sweep/figs_unified/
 
 # slurm job logs (written next to the script by run_sweep.slurm)
 seir_sweep/slurm_logs/

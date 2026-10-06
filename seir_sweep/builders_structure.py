@@ -8,19 +8,29 @@ not cover (see ``config_structure.py``):
                        plus **one fixed community edge set** matched from the
                        age-structured fit to counts *summed over frequency*.
 * ``nohh_static``   -- singleton population, no household layer, one fixed
-                       community edge set from the **age-blind reduced** fit,
-                       also summed over frequency.
+                       community edge set from the **same** age-structured
+                       summed fit as ``hh_static``.
 * ``nohh_temporal`` -- singleton population, no household layer, the three
-                       frequency layers redrawn nightly from the age-blind
-                       reduced fit. Carries the same ICC (one_time persistence)
-                       axis as the main sweep.
+                       frequency layers redrawn nightly from the **same**
+                       age-structured layered fit the main sweep
+                       (``hh_temporal``) uses. Carries the same ICC (one_time
+                       persistence) axis as the main sweep.
+
+**Every arm is age-structured.** A no-household arm is its household
+counterpart with the household layer taken away and nothing else changed: the
+same fitted community-contact parameters, the same stub matching by age group,
+on a population of singletons with the same UK age structure. (Until
+2026-10-06 the ``nohh_*`` arms drew contact from a fit that pooled every age
+into one bucket, so removing households also removed age structure; results
+produced by that construction carry no ``nohh_contact_fit`` column and the
+driver refuses to resume on top of them.)
 
 Every arm draws community contacts through the same ``raw_sampler`` interface,
 so the NB and log-GMM models differ only in *how a node's contact vector is
 drawn* -- never in the architecture around it.
 
 Log-GMM arms are mean-matched, as in the main sweep: ``add_cell_mean_match``
-below is the summed/reduced counterpart of ``gmm_contacts.
+below is the summed counterpart of ``gmm_contacts.
 add_cell_mean_match_layered``, pinning each (contact_age x duration) cell's mean
 count to the survey so the two models' marginals agree and only the *joint*
 structure differs.
@@ -61,6 +71,7 @@ from gillespie_seir import (                 # noqa: E402
 )
 
 import config_structure as CS                # noqa: E402
+import builders as MB                        # noqa: E402  (the main sweep's)
 from builders import calibrate_rho           # noqa: E402
 
 FITS_CACHE = CS.OUT_DIR / "fits_cache.pkl"
@@ -68,11 +79,15 @@ LOGGMM_CACHE = REPO / "outputs_loggmm" / "networks" / "loggmm_fits.pkl"
 
 TEMPORAL_LAYERS = ["everyday", "few_times_week", "one_time"]
 
+# Written into the network metadata of every no-household realisation, so the
+# results themselves record which construction produced them.
+NOHH_CONTACT_FIT = "age_structured"
+
 _FITS = None  # per-process lazy cache
 
 
 # ---------------------------------------------------------------------------
-# Log-GMM mean-matching for the summed / reduced parameter sets
+# Log-GMM mean-matching for the summed parameter set
 # ---------------------------------------------------------------------------
 
 def add_cell_mean_match(params: dict, X_by_age: dict[int, np.ndarray],
@@ -80,9 +95,9 @@ def add_cell_mean_match(params: dict, X_by_age: dict[int, np.ndarray],
     """Attach per-cell mean-match scales to a single fitted log-GMM param dict.
 
     ``gmm_contacts.add_cell_mean_match_layered`` does this for the three-layer
-    (age-structured) fit the main sweep uses; the static and age-blind arms need
-    the same treatment for their ``params_summed`` / ``params_reduced_*`` fits,
-    which are plain dicts rather than a per-layer list. ``X_by_age[a]`` is the
+    fit the temporal arms use; the static arms need the same treatment for
+    their ``params_summed`` fit, which is a plain dict rather than a per-layer
+    list. ``X_by_age[a]`` is the
     ``(n_participants, n_cells)`` survey matrix that age group's mixture was fit
     on, flattened the same way -- the scales are read off the fitted mixture, so
     nothing is refitted.
@@ -98,7 +113,7 @@ def add_cell_mean_match(params: dict, X_by_age: dict[int, np.ndarray],
 
 
 def _X_summed_by_age(all_contacts: np.ndarray, source_ages: np.ndarray) -> dict:
-    """Age-structured survey matrix, summed over frequency (static hh arm)."""
+    """Age-structured survey matrix, summed over frequency (static arms)."""
     summed = all_contacts.sum(axis=3)                      # (n, N_AGE, N_DUR)
     out = {}
     for a in range(N_AGE):
@@ -112,24 +127,31 @@ def _X_summed_by_age(all_contacts: np.ndarray, source_ages: np.ndarray) -> dict:
 # ---------------------------------------------------------------------------
 
 def prepare_fits(force: bool = False) -> Path:
-    """Fit/collect every arm's parameters once and cache them to disk.
+    """Fit/collect the static arms' parameters once and cache them to disk.
 
-    The NB fits are cheap moment matches and are done here. The log-GMM fits are
-    the expensive part and are **not** refitted: they are read from the same
-    ``outputs_loggmm/networks/loggmm_fits.pkl`` the main sweep uses, which
-    already holds the summed and reduced variants alongside the layered one, so
-    both sweeps rest on identical mixtures.
+    Both static arms (with and without households) use the age-structured fit
+    to counts summed over frequency. The NB fit is a cheap moment match and is
+    done here. The log-GMM fit is the expensive part and is **not** refitted: it
+    is read from the same ``outputs_loggmm/networks/loggmm_fits.pkl`` the main
+    sweep uses, so both sweeps rest on identical mixtures.
+
+    The temporal no-household arm needs the *layered* fit, and takes it straight
+    from the main sweep's own cache (``builders.samplers_for``) rather than
+    from here, so it cannot differ from what ``hh_temporal`` was run with.
+
+    A cache written before 2026-10-06 also holds ``reduced_*`` entries (the
+    pooled, age-blind fits the no-household arms used to draw from). Nothing
+    reads them any more; the file is otherwise identical and need not be
+    regenerated.
     """
     if FITS_CACHE.exists() and not force:
         return FITS_CACHE
     FITS_CACHE.parent.mkdir(parents=True, exist_ok=True)
 
-    hh_ages, all_contacts, source_ages, reduced_arr = cc.load_survey_data()
+    hh_ages, all_contacts, source_ages, _reduced = cc.load_survey_data()
 
     nb = {
         "summed": cc.fit_params_summed(all_contacts, source_ages, fit_nb_mom),
-        "reduced_summed": cc.fit_params_reduced_summed(reduced_arr, fit_nb_mom),
-        "reduced_layered": cc.fit_params_reduced_layered(reduced_arr, fit_nb_mom),
     }
 
     if not LOGGMM_CACHE.exists():
@@ -140,17 +162,9 @@ def prepare_fits(force: bool = False) -> Path:
     with open(LOGGMM_CACHE, "rb") as f:
         gmm = pickle.load(f)
 
-    # Age-blind fits live in a single bucket (age 0) with a 5-D duration-only
-    # cell vector -- see ``gmm_contacts.fit_log_gmm_reduced_*``.
     loggmm_mm = {
         "summed": add_cell_mean_match(
             gmm["params_summed"], _X_summed_by_age(all_contacts, source_ages)),
-        "reduced_summed": add_cell_mean_match(
-            gmm["params_reduced_summed"], {0: reduced_arr.sum(axis=2)}),
-        "reduced_layered": [
-            add_cell_mean_match(p, {0: reduced_arr[:, :, f]})
-            for f, p in enumerate(gmm["params_reduced_layered"])
-        ],
     }
 
     with open(FITS_CACHE, "wb") as f:
@@ -182,8 +196,8 @@ def samplers_for(model: str):
     raise ValueError(f"unknown model {model!r}")
 
 
-def params_for(model: str, key: str):
-    """Fitted parameters for ``model`` under one of the three fit variants."""
+def params_for(model: str, key: str = "summed"):
+    """Fitted static-arm parameters for ``model`` (the age-structured summed fit)."""
     fits = get_fits()
     if model not in fits:
         raise ValueError(f"unknown model {model!r}")
@@ -199,7 +213,8 @@ class Realisation:
 
     Mirrors ``builders.Realisation`` (same attribute and method names, so
     ``metrics.py`` and the driver treat both sweeps identically), but covers
-    static edge sets and household-free populations as well.
+    static edge sets and household-free populations as well. ``nodes_by_age``
+    is always the population's real age grouping.
     """
 
     def __init__(self, pop, nodes_by_age, hh_by_node, household_sizes,
@@ -271,23 +286,24 @@ def _degree_from_edges(edges, n_nodes: int) -> np.ndarray:
 
 
 def _build_static(model: str, n_nodes: int, seed: int, *, households: bool):
-    """Static-community arm: ``hh_static`` (households) or ``nohh_static``."""
+    """Static-community arm: ``hh_static`` (households) or ``nohh_static``.
+
+    The two differ in the population only -- observed household compositions, or
+    one person per household. The community layer is built the same way in
+    both: the age-structured summed fit, stubs matched within and between the
+    population's nine age groups.
+    """
     fits = get_fits()
     raw_sampler, _ = samplers_for(model)
     rng = np.random.default_rng(seed)
     cc.N_NODES = n_nodes
 
-    if households:
-        pop, nba, hbn, hs, he = cc.build_population(fits["hh_ages"], rng)
-        params = params_for(model, "summed")
-        stub_nba = nba
-    else:
-        pop, nba, hbn, hs, he = cc.build_population(fits["singleton_hh_ages"], rng)
-        params = params_for(model, "reduced_summed")
-        stub_nba = cc.flat_nodes_by_age(pop)   # age-blind: one bucket
+    templates = fits["hh_ages"] if households else fits["singleton_hh_ages"]
+    pop, nba, hbn, hs, he = cc.build_population(templates, rng)
+    params = params_for(model, "summed")
 
     community = cc.build_static_community_edges(
-        params, stub_nba, hbn, he, rng, raw_sampler=raw_sampler
+        params, nba, hbn, he, rng, raw_sampler=raw_sampler
     )
 
     edges = ([(u, v, "household", HOUSEHOLD_WEIGHT) for u, v in he]
@@ -308,18 +324,22 @@ def _build_static(model: str, n_nodes: int, seed: int, *, households: bool):
 
 
 def _build_nohh_temporal(model: str, target_icc: float, n_nodes: int, seed: int):
-    """Temporal community layers on a singleton (household-free) population."""
+    """Temporal community layers on a singleton (household-free) population.
+
+    Step for step the main sweep's ``builders.build_realisation`` -- the same
+    age-structured layered parameters, read from the main sweep's own fit cache,
+    the same everyday matching, the same persistence calibration -- with the
+    household templates swapped for singletons, so there is no household layer.
+    """
     fits = get_fits()
-    raw_sampler, rate_sampler = samplers_for(model)
+    params, raw_sampler, rate_sampler = MB.samplers_for(model)
     rng = np.random.default_rng(seed)
     cc.N_NODES = n_nodes
 
     pop, nba, hbn, hs, he = cc.build_population(fits["singleton_hh_ages"], rng)
-    flat_nba = cc.flat_nodes_by_age(pop)       # age-blind: one bucket
-    params = params_for(model, "reduced_layered")
 
     everyday = cc.build_everyday_edges_ud(
-        params[0], flat_nba, hbn, he, rng, raw_sampler=raw_sampler
+        params[0], nba, hbn, he, rng, raw_sampler=raw_sampler
     )
 
     meta = {
@@ -333,7 +353,7 @@ def _build_nohh_temporal(model: str, target_icc: float, n_nodes: int, seed: int)
         # Fresh nightly redraw: no persistent rate at all.
         tc = TemporalContacts.build(
             pop=pop, nb_params=params, everyday_edges=everyday, rng=rng,
-            nodes_by_age=flat_nba, raw_sampler=raw_sampler, rate_sampler=None,
+            raw_sampler=raw_sampler, rate_sampler=None,
         )
         meta.update({"noise_kind": "fresh_daily", "rho": float("nan"),
                      "icc_persistent": 0.0, "icc_target_achievable": 0.0})
@@ -342,10 +362,10 @@ def _build_nohh_temporal(model: str, target_icc: float, n_nodes: int, seed: int)
     # Persistent rates, then calibrate rho on the *realised* rate distribution.
     tc = TemporalContacts.build(
         pop=pop, nb_params=params, everyday_edges=everyday, rng=rng,
-        nodes_by_age=flat_nba, raw_sampler=raw_sampler, rate_sampler=rate_sampler,
+        raw_sampler=raw_sampler, rate_sampler=rate_sampler,
     )
     rho, icc_persist, icc_achievable = calibrate_rho(
-        tc.one_time_rates, flat_nba, pop.n_nodes, target_icc
+        tc.one_time_rates, nba, pop.n_nodes, target_icc
     )
     tc.one_time_noise = {"kind": "partial_resample", "rho": rho}
     meta.update({
@@ -376,4 +396,8 @@ def build_realisation(arm: str, model: str, target_icc: float | None,
         "households": CS.arm_has_households(arm),
         "target_icc": target_icc if target_icc is not None else float("nan"),
     })
+    if not CS.arm_has_households(arm):
+        # Recorded with the results: a no-household row without this value was
+        # produced by the earlier pooled (age-blind) construction.
+        real.meta["nohh_contact_fit"] = NOHH_CONTACT_FIT
     return real

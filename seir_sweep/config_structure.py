@@ -31,13 +31,19 @@ made on counts *summed over frequency* -- into one fixed edge set that is on
 every day. Same survey, same duration weighting; what changes is whether a
 contact is a nightly draw or a permanent edge.
 
-**households vs no households.** Following the established 2x2 in
-``seir_comparison_common.py`` (``realization_no_household_*``), "no households"
-means a population of singletons -- no household layer at all -- with community
-contacts drawn from the **age-blind reduced** survey (``reconnect_reduced.json``,
-5 duration bins, no contact-age axis). So this axis removes household structure
-*and* age structure together, exactly as the published 2x2 does; it is not a
-households-only ablation.
+**households vs no households.** "No households" means a population of
+singletons -- no household layer at all -- and nothing else: the people have the
+same UK age structure, and community contact is drawn from the **same
+age-structured fit** as the matching household arm (the summed fit for the
+static arm, the main sweep's layered fit for the temporal arm), with stubs
+matched by age group in the same way. So this axis removes the household layer
+alone. Contacts with household members, which were taken out of the survey data
+because the household layer represents them, are not put back.
+
+(Until 2026-10-06 the ``nohh_*`` arms followed the older 2x2 in
+``seir_comparison_common.py`` (``realization_no_household_*``) and drew contact
+from the pooled, age-blind ``reconnect_reduced.json``, which removed age
+structure together with households. Every arm is now age-structured.)
 
 **ICC** (one_time persistence) applies only to the temporal arm -- a static
 network has no daily one_time layer to persist. It is carried at the same three
@@ -90,8 +96,8 @@ ARMS: dict[str, tuple[bool, bool]] = {
 
 ARM_LABELS = {
     "hh_static": "Static community network + households (age-structured)",
-    "nohh_static": "Static community network, no households (age-blind)",
-    "nohh_temporal": "Temporal community network, no households (age-blind)",
+    "nohh_static": "Static community network, no households (age-structured)",
+    "nohh_temporal": "Temporal community network, no households (age-structured)",
 }
 
 # The corner this sweep does not run, and where its rows live instead.
