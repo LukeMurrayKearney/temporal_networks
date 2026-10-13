@@ -171,6 +171,41 @@ because the done-markers would skip the old betas and the write-once network
 shard would keep the old structure. `--force` does not get round this — it only
 clears done-markers.
 
+## Denser betas between R0 = 0.2 and 6
+
+`dense_betas.py` adds betas so that each architecture has five times as many
+points with measured R0 between 0.2 and 6, run with the existing replication
+(every network realisation of the arm, 10 epidemics each) on the same seeded
+networks. The architectures convert beta into R0 differently, so each gets its
+own list, chosen by inverting its measured R0(beta) curve; within an arm every
+model and ICC shares the list, so those comparisons stay paired. The lists, and
+the job plan derived from the recorded run times, are in `dense_betas.json`:
+
+| arm | betas in window | new betas | CPU-h | jobs |
+|---|---|---|---|---|
+| hh_temporal | 17 | 68 | ~3,170 | 6 (ICC x 2 chunks), 20 CPUs, 37 h |
+| hh_static | 18 | 72 | ~80 | 1, 20 CPUs, 6 h |
+| nohh_temporal | 14 | 56 | ~2,160 | 6 (ICC x 2 chunks), 20 CPUs, 25 h |
+| nohh_static | 16 | 64 | ~60 | 1, 20 CPUs, 5 h |
+
+`hh_temporal` goes through `run_sweep.py` (the main sweep), the others through
+`run_structure_sweep.py`. On the cluster, from `seir_sweep/`:
+
+```bash
+DRY_RUN=1 bash submit_dense.sh     # list the 14 sbatch commands
+bash submit_dense.sh               # submit them
+# when every job has finished:
+python run_sweep.py --collect
+python run_structure_sweep.py --collect
+```
+
+The jobs run with `--no-collect` (so two finishing together cannot rewrite the
+summary tables at once) and without transmission logs (about 120 GB otherwise;
+`DENSE_LOGS=1` keeps them). Figures built on transmission trees therefore match
+R0 among the betas that have logs, `unified_common.matched(..., logged=True)`,
+which keeps them on the original grid. A job that times out is resumed by
+submitting it again.
+
 ## A note on `gillespie_seir.py`
 
 The static arms needed one change to the shared simulator: `simulate_seir` now
@@ -320,11 +355,11 @@ Three principles hold throughout:
 
 Results produced before 2026-10-06 came from `nohh_*` arms built from `reduced`
 parameters of shape `(1, 1, 5, 2)` -- a single age bucket -- so in those results
-removing households also removed age-assortative mixing, and the notebooks'
-prose (and `build_nb1.py`) describes that confound. The arms are now
-age-structured. Once they have been re-run, the notebooks have to be executed
-again and that prose rewritten: the flat age profile and the wide contact
-distribution it explains belong to the old construction.
+removing households also removed age-assortative mixing. The arms are now
+age-structured, the no-household runs have been repeated with the new
+construction, and `build_nb1.py` describes it: a no-household arm differs from
+its household counterpart by the household layer alone (and by having no top-up
+individuals in its population).
 
 ### Per-run data and `regen_perrun.py`
 

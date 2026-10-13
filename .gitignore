@@ -56,6 +56,10 @@
 !seir_sweep/run_structure_sweep.slurm
 !seir_sweep/rerun_nohh.sh
 !seir_sweep/rerun_nohh.slurm
+!seir_sweep/dense_betas.py
+!seir_sweep/dense_betas.json
+!seir_sweep/run_dense.slurm
+!seir_sweep/submit_dense.sh
 !seir_sweep/fetch_results.sh
 # unified_analysis.ipynb is deliberately NOT negated: this repo tracks no
 # notebooks (see the *.ipynb rule below), and a notebook carries megabytes

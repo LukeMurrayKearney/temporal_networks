@@ -395,6 +395,10 @@ def main() -> None:
     p.add_argument("--estimate", action="store_true", help="project cost, run nothing")
     p.add_argument("--collect", action="store_true", help="merge shards and exit")
     p.add_argument("--force", action="store_true", help="ignore done-markers")
+    p.add_argument("--no-collect", action="store_true",
+                   help="do not merge the shards when the pool drains; for jobs that "
+                        "run side by side, which would otherwise rewrite the summary "
+                        "tables at the same time. Run --collect once afterwards.")
     args = p.parse_args()
 
     _ensure_dirs()
@@ -496,6 +500,10 @@ def main() -> None:
                       f"{res['seconds']:.0f}s)")
 
     print(f"\nAll tasks finished in {time.perf_counter() - t0:.0f}s ({n_err} errors)")
+    if args.no_collect:
+        print("--no-collect: summary tables not rebuilt; run --collect when all "
+              "jobs have finished")
+        return
     print("Collecting shards...")
     collect()
 
