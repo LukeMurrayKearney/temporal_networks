@@ -71,8 +71,10 @@ SIZES = [10_000, 100_000, 1_000_000]
 # at any beta -- it is a property of the contact model, not of the grid.
 BETAS = [0.025, 0.05, 0.071, 0.10, 0.13, 0.17, 0.25, 0.37, 0.46, 0.59, 0.8, 1.08, 1.5, 1.97, 3.25, 5.5, 9, 15.3, 35.9, 84.4, 800.0]
 
-# Nominal R0 each beta targets (informational -- the *measured* R0 is recorded
-# per replicate as ``r0_measured``).
+# Nominal R0 each beta targets (informational). These, and the grid itself, were
+# chosen with calibrate_beta.py's index-case R0 (``r0_measured`` per replicate);
+# the analysis's R0 is generation 2 over generation 1, pooled over the runs at a
+# beta (generations.py; each replicate records ``n_gen1`` and ``n_gen2``).
 BETA_R0_NOMINAL = {
     0.025: 0.2, 0.05: 0.4, 0.071: 0.55, 0.10: 0.7, 
     0.13: 0.85, 0.17: 1.0, 0.25: 1.25, 0.37: 1.5, 

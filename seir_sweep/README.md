@@ -102,7 +102,10 @@ threshold can be changed at analysis time.
 `offspring_dispersion_k` (Lloyd-Smith NB MLE, small k = superspreading),
 `offspring_max`, `frac_zero_offspring`, `top10pct_transmission_share`,
 `top20pct_transmission_share`, `n_infectors_considered`. Plus `r0_measured`
-(seed-only offspring mean).
+(seed-only offspring mean, kept for reference) and `n_gen1`, `n_gen2`, `r0_gen`
+(infections in generations 1 and 2; the analysis's R0 is the pooled
+sum(n_gen2)/sum(n_gen1) over the runs at a beta -- see `generations.py` and
+README_structure.md, "How R0 is measured").
 
 **C. Attribution** — `frac_trans_{household, everyday, few_times_week,
 one_time}`, `attack_rate_age0..8`, `pct_households_infected`,

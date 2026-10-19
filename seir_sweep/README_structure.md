@@ -206,6 +206,54 @@ R0 among the betas that have logs, `unified_common.matched(..., logged=True)`,
 which keeps them on the original grid. A job that times out is resumed by
 submitting it again.
 
+The window was chosen with the earlier R0 (offspring of the index cases), so
+under the generation-based R0 below its edges move a little; the betas
+themselves are fixed. Do not re-run `dense_betas.py`: it would rewrite
+`dense_betas.json`, which the generation backfill reads to replay each job's
+betas in their original order.
+
+## How R0 is measured
+
+R0 is the average number of secondary cases caused by the people the index
+cases infect, not by the index cases themselves. Index cases are generation 0
+(chosen at random, so their offspring reflects a typical person rather than one
+reached along a contact), the people they infect are generation 1, and so on:
+
+    R0 = sum over runs of (infections in generation 2)
+         / sum over runs of (infections in generation 1)
+
+pooled over all 100 runs (10 networks x 10 epidemics) at a beta, with a
+delta-method standard error. This is the data-driven-networks paper's
+sum(I3)/sum(I2), whose numbering starts the seeds at generation 1.
+`generations.py` holds the definitions; `unified_common.r0_points` returns R0
+per beta and every figure and matched-R0 comparison goes through it.
+
+New runs record `n_gen1` and `n_gen2` in their row of the runs table. Runs made
+before that are backfilled into side files,
+`<outputs dir>/gen_counts/<cell>__beta<tag>.csv`, which `unified_common` merges
+into the runs table on load:
+
+```bash
+# original grid, both sweeps: read from the transmission logs (~1 h)
+sbatch backfill_generations_logs.slurm
+# dense runs, which have no logs: replay each job's betas in their original
+# order from the recorded seeds (same 14 jobs and cost as the dense runs)
+GENERATIONS=1 bash submit_dense.sh
+# here: check progress and copy the side files down
+python3 fetch_dense.py --generations
+```
+
+A replayed run is compared with the recorded final size and the side file says
+whether it matched (`exact`). Static arms replay exactly; temporal arms do when
+a network realisation's betas are replayed in their original order, which is
+what the dense jobs do. A replay that does not match is a fresh epidemic on the
+same network at the same beta, so it is still a valid sample for R0, but not
+the same run as the recorded final size. A beta enters R0 only when every one
+of its runs has counts, so a partly backfilled beta never stands in for the
+whole. Anything the log backfill cannot cover is listed in its output as
+"without complete logs"; on the original grid that should be nothing, and any
+that remain can be replayed with `--betas <beta> --generations replay`.
+
 ## A note on `gillespie_seir.py`
 
 The static arms needed one change to the shared simulator: `simulate_seir` now

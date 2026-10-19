@@ -27,6 +27,10 @@
 #     DENSE_CHUNK    which chunk of the beta list this job runs (0-based) ...
 #     DENSE_NCHUNKS  ... out of this many; chunk i is betas i, i+k, i+2k, ...
 #     DENSE_LOGS     1 to keep per-run transmission logs (default 0: see below)
+#     DENSE_GENERATIONS  1 to backfill generation counts instead of running:
+#                    the job's betas are replayed in the same order from their
+#                    recorded seeds and only gen_counts/ side files are written
+#                    (see generations.py; submit_dense.sh with GENERATIONS=1)
 #     DENSE_EXTRA    anything else for the driver, e.g. "--models nb"
 #
 # Transmission logs are off by default. Every number in runs_summary.csv is
@@ -78,6 +82,7 @@ PY
 ARGS=(--sizes 100000 -j "$JOBS" --no-collect)
 [ -n "${DENSE_ICC:-}" ] && ARGS+=(--iccs "$DENSE_ICC")
 [ "${DENSE_LOGS:-0}" = 1 ] || ARGS+=(--no-transmission-log)
+[ "${DENSE_GENERATIONS:-0}" = 1 ] && ARGS+=(--generations replay)
 
 echo "host=$(hostname) cpus=${SLURM_CPUS_PER_TASK} arm=${DENSE_ARM} icc=${DENSE_ICC:-n/a} chunk=${CHUNK}/${NCHUNKS}"
 echo "betas: ${BETAS}"

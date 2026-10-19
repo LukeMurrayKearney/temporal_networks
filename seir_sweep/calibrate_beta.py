@@ -13,6 +13,11 @@ observations and R0 is estimated tightly.
 
     python calibrate_beta.py                 # scan and report
     python calibrate_beta.py --write-config  # also rewrite BETAS in config.py
+
+This R0 only places the grid. The R0 every analysis reports is the offspring of
+the people the index cases infect (generation 2 over generation 1, pooled over
+the runs at a beta; see generations.py), which needs full-length runs and so is
+read from the sweep itself rather than from this scan.
 """
 
 from __future__ import annotations

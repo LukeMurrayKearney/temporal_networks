@@ -7,6 +7,9 @@
 #     DRY_RUN=1 bash submit_dense.sh        # print the sbatch commands only
 #     ARMS="hh_static nohh_static" bash submit_dense.sh   # a subset
 #     DENSE_LOGS=1 bash submit_dense.sh     # keep transmission logs (~120 GB)
+#     GENERATIONS=1 bash submit_dense.sh    # backfill generation counts for the
+#                                           # dense runs (same jobs, replayed in
+#                                           # order; writes gen_counts/ only)
 #
 # The plan -- betas, how many chunks, CPUs and time per job -- is read from
 # dense_betas.json, so it cannot drift from the betas themselves:
@@ -42,9 +45,10 @@ PY
 n=0
 while read -r arm icc chunk nchunks cpus hours; do
     [ "$icc" = "-" ] && icc=""
-    name="dense_${arm}${icc:+_icc$icc}_c${chunk}"
+    pre=""; [ "${GENERATIONS:-0}" = 1 ] && pre="gen_"
+    name="${pre}dense_${arm}${icc:+_icc$icc}_c${chunk}"
     cmd=(sbatch --job-name="$name" --cpus-per-task="$cpus" --time="${hours}:00:00"
-         --export="ALL,DENSE_ARM=$arm,DENSE_ICC=$icc,DENSE_CHUNK=$chunk,DENSE_NCHUNKS=$nchunks,DENSE_LOGS=${DENSE_LOGS:-0}"
+         --export="ALL,DENSE_ARM=$arm,DENSE_ICC=$icc,DENSE_CHUNK=$chunk,DENSE_NCHUNKS=$nchunks,DENSE_LOGS=${DENSE_LOGS:-0},DENSE_GENERATIONS=${GENERATIONS:-0}"
          run_dense.slurm)
     if [ "${DRY_RUN:-0}" = 1 ]; then echo "${cmd[*]}"; else "${cmd[@]}"; fi
     n=$((n + 1))

@@ -48,6 +48,7 @@ if str(HERE) not in sys.path:
 
 import config as C                                    # noqa: E402
 import metrics as M                                   # noqa: E402
+import generations as G                                # noqa: E402
 from builders import build_realisation, prepare_fits  # noqa: E402
 
 sys.path.insert(0, str(C.REPO))
@@ -159,14 +160,22 @@ def _migrate_done_markers() -> int:
 
 def run_task(model: str, icc: float, n_nodes: int, net_rep: int,
              betas: list[float], sim_reps: int, max_days: int | None,
-             save_transmission_log: bool, save_daily_series: bool) -> dict:
+             save_transmission_log: bool, save_daily_series: bool,
+             gen_mode: str | None = None) -> dict:
     cell = C.cell_id(model, icc, n_nodes, net_rep)
     # Betas are tracked one at a time, so a cell that already holds some betas
     # only runs the ones it is missing. The network is rebuilt from the same
     # ``net_seed``, so added betas land on exactly the same realisation as the
     # betas that were run before -- the design stays paired.
-    todo = [b for b in betas
-            if not (DONE_DIR / f"{cell}__beta{_btag(b)}.done").exists()]
+    if gen_mode == "replay":
+        # Backfilling generation counts: replay the requested betas, in the
+        # order given, from the recorded seeds. Nothing but the side files is
+        # written; the recorded shards stay authoritative.
+        todo = [b for b in betas
+                if not G.side_path(SHARD_DIR.parent, cell, b).exists()]
+    else:
+        todo = [b for b in betas
+                if not (DONE_DIR / f"{cell}__beta{_btag(b)}.done").exists()]
     if not todo:
         return {"cell": cell, "status": "skipped", "seconds": 0.0,
                 "n_runs": 0, "n_betas": 0}
@@ -188,9 +197,9 @@ def run_task(model: str, icc: float, n_nodes: int, net_rep: int,
         pd.DataFrame([struct]).to_csv(net_shard, index=False)
 
     edges_fn = real.edges_fn()
-    n_runs = 0
+    n_runs = n_exact = 0
     for beta in todo:
-        rows = []
+        rows, gen_recs = [], []
         for rep in range(sim_reps):
             sim_seed = _seed(2, _model_code(model), int(icc * 1000), n_nodes,
                              net_rep, int(round(beta * 1e6)), rep)
@@ -209,6 +218,14 @@ def run_task(model: str, icc: float, n_nodes: int, net_rep: int,
             tdf = pd.DataFrame([t.__dict__ for t in traj.transmissions])
             if tdf.empty:
                 tdf = pd.DataFrame(columns=TRANSMISSION_COLUMNS)
+
+            if gen_mode == "replay":
+                n1, n2 = G.gen_counts(tdf)
+                gen_recs.append({"sim_rep": rep, "n_gen1": n1, "n_gen2": n2,
+                                 "method": "replay",
+                                 "final_size_replay": int(traj.final_size())})
+                del tdf, traj
+                continue
 
             n_days = int(np.ceil(traj.times[-1]))
             daily = traj.daily_snapshot(n_days)
@@ -234,6 +251,7 @@ def run_task(model: str, icc: float, n_nodes: int, net_rep: int,
                 real.hh_by_node, real.household_sizes,
                 om.infected_node_set(tdf, traj.seed_nodes),
             ))
+            row.update(G.gen_row(tdf))
             rows.append(row)
 
             stem = f"{cell}__beta{int(round(beta * 1e6)):08d}__rep{rep}"
@@ -249,6 +267,17 @@ def run_task(model: str, icc: float, n_nodes: int, net_rep: int,
                               compression="gzip")
             del tdf, traj, daily
 
+        if gen_mode == "replay":
+            rec = G.recorded_rows(SHARD_DIR.parent, cell, beta)
+            fs = {} if rec is None else dict(zip(rec["sim_rep"], rec["final_size"]))
+            for g in gen_recs:
+                g["final_size_recorded"] = fs.get(g["sim_rep"], np.nan)
+                g["exact"] = bool(g["final_size_replay"] == g["final_size_recorded"])
+                n_exact += g["exact"]
+            G.write_side(SHARD_DIR.parent, cell, beta, gen_recs)
+            n_runs += len(gen_recs)
+            continue
+
         # Commit this beta on its own, so an interrupted task keeps the betas it
         # finished instead of losing the whole realisation.
         pd.DataFrame(rows).to_csv(
@@ -259,8 +288,44 @@ def run_task(model: str, icc: float, n_nodes: int, net_rep: int,
         }))
         n_runs += len(rows)
 
-    return {"cell": cell, "status": "ok", "n_runs": n_runs,
+    return {"cell": cell, "status": "ok", "n_runs": n_runs, "n_exact": n_exact,
             "n_betas": len(todo), "seconds": time.perf_counter() - t_start}
+
+
+# ---------------------------------------------------------------------------
+# Generation counts for runs made before they were recorded (generations.py)
+# ---------------------------------------------------------------------------
+
+def _shard_betas(cell: str) -> list[float]:
+    """Every beta this cell has a runs shard for (the tag is beta x 1e6, zero-padded
+    to at least 8 digits: beta = 800 has 9)."""
+    return sorted(int(f.name.split("__beta")[1].split(".")[0]) / 1e6
+                  for f in SHARD_DIR.glob(f"runs_{cell}__beta*.csv"))
+
+
+def _generations_from_logs(cells: list[str], workers: int) -> None:
+    """Side files of generation counts from transmission logs, for every
+    (cell, beta) whose logs are complete. Writes nothing else."""
+    out = SHARD_DIR.parent
+    jobs = [(out, c, _shard_betas(c)) for c in cells]
+    tot = {"written": 0, "no_logs": 0, "already": 0}
+    with ProcessPoolExecutor(max_workers=workers) as pool:
+        for res in pool.map(_logs_worker, jobs):
+            for k in tot:
+                tot[k] += res.get(k, 0)
+            if res.get("status") == "error":
+                print(f"ERROR {res['cell']}: {res['error']}")
+    print(f"generation counts from logs over {len(cells)} realisations: "
+          f"{tot['written']} (cell, beta) units written, {tot['already']} already "
+          f"present, {tot['no_logs']} without complete logs (need --generations replay)")
+
+
+def _logs_worker(job) -> dict:
+    out, cell, betas = job
+    try:
+        return G.backfill_from_logs(out, cell, betas)
+    except Exception as exc:  # noqa: BLE001
+        return {"cell": cell, "status": "error", "error": repr(exc)}
 
 
 def _worker(args) -> dict:
@@ -343,6 +408,12 @@ def main() -> None:
     p.add_argument("--estimate", action="store_true", help="project cost, run nothing")
     p.add_argument("--collect", action="store_true", help="merge shards and exit")
     p.add_argument("--force", action="store_true", help="ignore done-markers")
+    p.add_argument("--generations", choices=["logs", "replay"], default=None,
+                   help="backfill generation counts (generations.py) instead of running: "
+                        "'logs' reads them from transmission logs; 'replay' re-simulates "
+                        "the requested betas from their recorded seeds, in the order "
+                        "given, and checks each run against its recorded final size. "
+                        "Writes only <outputs>/gen_counts/ side files.")
     p.add_argument("--no-collect", action="store_true",
                    help="do not merge the shards when the pool drains; for jobs that "
                         "run side by side, which would otherwise rewrite the summary "
@@ -356,6 +427,10 @@ def main() -> None:
         return
 
     tasks_grid = C.grid(args.models, args.iccs, args.sizes)
+
+    if args.generations == "logs":
+        _generations_from_logs(sorted({C.cell_id(*t) for t in tasks_grid}), args.workers)
+        return
     if args.estimate:
         estimate(tasks_grid, args.betas, args)
         return
@@ -399,7 +474,8 @@ def main() -> None:
 
     tasks = [
         (model, icc, n, rep, args.betas, C.REP_BUDGET[n]["sim_reps"],
-         args.max_days, not args.no_transmission_log, not args.no_daily_series)
+         args.max_days, not args.no_transmission_log, not args.no_daily_series,
+         "replay" if args.generations == "replay" else None)
         for (model, icc, n, rep) in tasks_grid
     ]
     # biggest first: better load balance on a fixed pool
@@ -415,7 +491,8 @@ def main() -> None:
         "max_days": args.max_days, "workers": args.workers,
         "n_tasks": len(tasks),
     }
-    (C.OUT_DIR / "manifest.json").write_text(json.dumps(manifest, indent=2))
+    if args.generations != "replay":   # a backfill is not a run of the sweep
+        (C.OUT_DIR / "manifest.json").write_text(json.dumps(manifest, indent=2))
 
     print(f"Running {len(tasks)} network realisations on {args.workers} workers\n")
     t0 = time.perf_counter()
@@ -432,9 +509,15 @@ def main() -> None:
             else:
                 print(f"[{n_done}/{len(tasks)}] {res['status']:7s} {res['cell']} "
                       f"({res.get('n_betas', 0)} betas, {res.get('n_runs', 0)} runs, "
-                      f"{res['seconds']:.0f}s)")
+                      f"{res['seconds']:.0f}s)"
+                      + (f" -- {res.get('n_exact', 0)}/{res.get('n_runs', 0)} replayed "
+                         "runs match the record" if args.generations == "replay" else ""))
 
     print(f"\nAll tasks finished in {time.perf_counter() - t0:.0f}s ({n_err} errors)")
+    if args.generations == "replay":
+        print("--generations replay: side files written to gen_counts/; nothing "
+              "else touched")
+        return
     if args.no_collect:
         print("--no-collect: summary tables not rebuilt; run --collect when all "
               "jobs have finished")
