@@ -64,6 +64,9 @@
 !seir_sweep/fetch_results.sh
 !seir_sweep/generations.py
 !seir_sweep/backfill_generations_logs.slurm
+!seir_sweep/r0_targets.py
+!seir_sweep/run_r0_target.slurm
+!seir_sweep/submit_r0_targets.sh
 # unified_analysis.ipynb is deliberately NOT negated: this repo tracks no
 # notebooks (see the *.ipynb rule below), and a notebook carries megabytes
 # of stored output. Rebuild it from the sweep outputs instead.

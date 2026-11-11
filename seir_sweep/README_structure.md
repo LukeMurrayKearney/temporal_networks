@@ -254,6 +254,37 @@ whole. Anything the log backfill cannot cover is listed in its output as
 "without complete logs"; on the original grid that should be nothing, and any
 that remain can be replayed with `--betas <beta> --generations replay`.
 
+### Where "R0 = 2" is
+
+Every figure and table read "at R0 = 2" (or any other target) is read at the
+beta where the variant's beta -> R0 curve, fitted to the R0 measured in its
+runs, reaches 2 -- never at the R0 a beta was planned to give, and never at a
+single noisy measured point. The curve is the data-driven-networks paper's
+tau -> R0 fit,
+
+    R0 - 1 = c + a log(1 + b beta)    over the betas with measured R0 in [1, 5.2),
+
+(`generations.fit_beta_r0`; `unified_common.R0FITS`). On the dense grid it
+follows the measured points to within their own scatter around R0 = 2, where a
+Hill curve fitted over the whole grid ran 0.05-0.15 high. Scalars (final size,
+growth rate, ...) are interpolated to the fitted beta from the simulated betas
+either side (`interp_at_r0`). Figures that need whole runs use the simulated
+beta nearest the fitted one (`matched`); the transmission-tree and household
+figures need logs, which the dense runs lack, so `r0_targets.py` makes 100
+runs with logs at each variant's fitted beta:
+
+```bash
+# on the cluster, once the generation counts are complete
+python r0_targets.py                  # fit; write r0_targets.json; print the plan
+DRY_RUN=1 bash submit_r0_targets.sh   # 16 sbatch lines, ~120 CPU-h in all
+bash submit_r0_targets.sh
+# here
+python3 r0_targets.py --fetch         # check; copy shards, logs, series; --collect
+```
+
+`r0_targets.json` records the fit that chose each beta and is not redone on a
+second run (`--refit` replaces it).
+
 ## A note on `gillespie_seir.py`
 
 The static arms needed one change to the shared simulator: `simulate_seir` now
@@ -387,10 +418,12 @@ spread onwards, and how infection first enters them.
 Three principles hold throughout:
 
 - **Every axis is measured $R_0$, never the nominal target.** A static and a
-  temporal network at the same beta are *not* at the same $R_0$: `hh_static`
-  needs beta 0.59 to reach $R_0 \approx 2$ where `nohh_static` needs 3.25.
-  Architectures are compared at matched $R_0$ via a fitted, inverted Hill curve,
-  and the achieved value is reported because the beta grid is finite.
+  temporal network at the same beta are *not* at the same $R_0$: the
+  no-household arms need several times the beta of the household arms.
+  "$R_0 = 2$" is the beta at which each variant's beta -> $R_0$ curve, fitted to
+  its measured $R_0$, reaches 2 (see "How R0 is measured"); scalars are
+  interpolated to that beta and figures that need whole runs use the nearest
+  simulated beta, or the runs `r0_targets.py` makes at it.
 - **Comparisons are against a benchmark, not only against each other.** An arm
   can be called wrong against the survey or against the homogeneous ODE; against
   another arm it is only different.

@@ -182,3 +182,69 @@ def r0_points(d: pd.DataFrame, complete_only: bool = True) -> pd.DataFrame:
         if np.isfinite(r):
             rows.append((float(b), r, se, int(ok.sum())))
     return pd.DataFrame(rows, columns=["beta", "r0", "sem", "n_runs"])
+
+
+# ---------------------------------------------------------------------------
+# The beta -> R0 curve fitted to those measurements
+#
+# Wherever the analysis reads something "at R0 = 2" (or any other target), the
+# beta it reads at comes from this curve, fitted per variant to the R0 measured
+# in the simulations, never from the R0 a beta was planned to give. The form is
+# the data-driven-networks paper's tau -> R0 fit (paper_figs_no_lockdown1,
+# band_log_fit): R0 - 1 = c + a log1p(b beta), over the betas whose measured R0
+# lies in [FIT_R0_MIN, FIT_R0_MAX). Against the Hill curve fitted over the whole
+# grid it removes a bias of 0.05-0.15 in R0 around R0 = 2 (checked on the dense
+# grid), and its scatter there is that of a single measured point.
+# ---------------------------------------------------------------------------
+
+FIT_R0_MIN, FIT_R0_MAX = 1.0, 5.2
+
+
+def r0_curve(beta, a: float, b: float, c: float) -> np.ndarray:
+    """R0 at ``beta`` on the fitted curve, R0 - 1 = c + a log1p(b beta), floored at 1."""
+    x = np.asarray(beta, dtype=float)
+    return 1.0 + np.maximum(c + a * np.log1p(b * x), 0.0)
+
+
+class BetaR0Fit:
+    """One variant's fitted beta -> R0 curve. It is used only over the betas it
+    was fitted on: outside them ``r0`` is NaN and ``beta_at`` finds nothing."""
+
+    def __init__(self, params, beta_lo: float, beta_hi: float, rms: float, n_points: int):
+        self.params = tuple(float(p) for p in params)
+        self.beta_lo, self.beta_hi = float(beta_lo), float(beta_hi)
+        self.rms, self.n_points = float(rms), int(n_points)
+
+    def r0(self, beta) -> np.ndarray:
+        x = np.asarray(beta, dtype=float)
+        inside = (x >= self.beta_lo * (1 - 1e-9)) & (x <= self.beta_hi * (1 + 1e-9))
+        return np.where(inside, r0_curve(x, *self.params), np.nan)
+
+    def beta_at(self, target: float) -> float:
+        """The beta at which the curve reaches ``target``, or NaN if it does not
+        within the fitted betas."""
+        from scipy.optimize import brentq
+        lo, hi = self.beta_lo, self.beta_hi
+        f = lambda x: float(r0_curve(x, *self.params)) - target       # noqa: E731
+        if not (f(lo) < 0 < f(hi)):
+            return float("nan")
+        return float(brentq(f, lo, hi, xtol=1e-12, rtol=1e-10))
+
+
+def fit_beta_r0(beta, r0) -> BetaR0Fit | None:
+    """Fit the beta -> R0 curve to measured (beta, R0) points; None if fewer than
+    four fall in the fit window or the fit fails."""
+    from scipy.optimize import curve_fit
+    beta, r0 = np.asarray(beta, dtype=float), np.asarray(r0, dtype=float)
+    m = np.isfinite(beta) & np.isfinite(r0) & (r0 >= FIT_R0_MIN) & (r0 < FIT_R0_MAX)
+    if m.sum() < 4:
+        return None
+    b, y = beta[m], r0[m]
+    try:
+        p, _ = curve_fit(r0_curve, b, y, p0=[1.0, 1.0 / np.median(b), 0.0],
+                         bounds=([0.0, 0.0, -np.inf], [np.inf, np.inf, np.inf]),
+                         maxfev=100_000)
+    except (RuntimeError, ValueError):
+        return None
+    rms = float(np.sqrt(np.mean((r0_curve(b, *p) - y) ** 2)))
+    return BetaR0Fit(p, b.min(), b.max(), rms, int(m.sum()))
